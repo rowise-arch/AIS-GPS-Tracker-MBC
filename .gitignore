@@ -1,0 +1,9 @@
+# Java build output
+lora-bridge/target/
+
+# Arduino IDE temporary files
+*.ino.*
+
+# Local editor settings
+.vscode/
+.idea/
