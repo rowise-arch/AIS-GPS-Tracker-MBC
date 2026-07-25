@@ -1,13 +1,13 @@
 // 1. Replace this object with Firebase's web app config from your project settings.
 // 2. The base station must write to: trackers/boat-001/latest
 const firebaseConfig = {
-  apiKey: "PASTE_YOUR_API_KEY",
+  apiKey: "AIzaSyCGouqpCGqDhq1NWP7rXint7CVgU4LSCr0",
   authDomain: "ais-gps-tracker.firebaseapp.com",
   databaseURL: "https://ais-gps-tracker-default-rtdb.firebaseio.com",
   projectId: "ais-gps-tracker",
   storageBucket: "ais-gps-tracker.firebasestorage.app",
   messagingSenderId: "4640602545",
-  appId: "PASTE_YOUR_APP_ID"
+  appId: "1:4640602545:web:c52dac68e8ef8199df2590"
 };
 
 const trackerPath = "trackers/boat-001/latest";
