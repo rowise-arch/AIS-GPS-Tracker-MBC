@@ -1,4 +1,4 @@
-// Firebase configuration (your actual config)
+// Firebase configuration
 const firebaseConfig = {
   apiKey: "AIzaSyCGouqpCGqDhq1NWP7rXint7CVgU4LSCr0",
   authDomain: "ais-gps-tracker.firebaseapp.com",
@@ -10,13 +10,24 @@ const firebaseConfig = {
 };
 
 const trackerPath = "trackers/boat-001/latest";
-const defaultCenter = [12.8797, 121.7740]; // Philippines; used until a GPS update arrives.
+const defaultCenter = [12.5742, 122.2709]; // Romblon, Philippines
 const $ = (id) => document.getElementById(id);
-const map = L.map("map", { zoomControl: false }).setView(defaultCenter, 6);
-L.control.zoom({ position: "bottomright" }).addTo(map);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OpenStreetMap contributors" }).addTo(map);
 
-const markerIcon = L.divIcon({ className: "", html: document.querySelector("#markerTemplate").innerHTML, iconSize: [34, 34], iconAnchor: [17, 33] });
+// Map setup - initial zoom level 10 to see all of Romblon
+const map = L.map("map", { zoomControl: false }).setView(defaultCenter, 10);
+L.control.zoom({ position: "bottomright" }).addTo(map);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { 
+  maxZoom: 19, 
+  attribution: "&copy; OpenStreetMap contributors" 
+}).addTo(map);
+
+const markerIcon = L.divIcon({ 
+  className: "", 
+  html: document.querySelector("#markerTemplate").innerHTML, 
+  iconSize: [34, 34], 
+  iconAnchor: [17, 33] 
+});
+
 let marker;
 let latestPosition;
 
@@ -56,15 +67,30 @@ function updateDashboard(data) {
   $("battery").textContent = data.battery != null ? `${data.battery}%` : "--%";
   $("rssi").textContent = data.rssi != null ? `${data.rssi} dBm` : "-- dBm";
   signalBars(Number(data.rssi));
-  if (!marker) marker = L.marker(latestPosition, { icon: markerIcon }).addTo(map);
-  else marker.setLatLng(latestPosition);
+  
+  // Update marker position WITHOUT auto-zoom
+  if (!marker) {
+    marker = L.marker(latestPosition, { icon: markerIcon }).addTo(map);
+  } else {
+    marker.setLatLng(latestPosition);
+  }
   marker.bindTooltip(data.name || "Boat 001", { direction: "top", offset: [0, -28] });
-  map.flyTo(latestPosition, Math.max(map.getZoom(), 15), { duration: 1.1 });
+  
+  // REMOVED: map.flyTo(latestPosition, Math.max(map.getZoom(), 15), { duration: 1.1 });
+  // The map stays at whatever zoom level the user set
+  
   setStatus("Live", "connected");
 }
 
-$("locateButton").addEventListener("click", () => { if (latestPosition) map.flyTo(latestPosition, 16); });
+// Locate button - zooms to tracker when clicked
+$("locateButton").addEventListener("click", () => { 
+  if (latestPosition) {
+    // Zoom to level 15 when button is clicked
+    map.flyTo(latestPosition, 15, { duration: 1.1 });
+  } 
+});
 
+// Connect to Firebase
 async function connectFirebase() {
   if (firebaseConfig.apiKey.startsWith("PASTE_")) {
     setStatus("Firebase setup needed", "offline");
@@ -77,12 +103,24 @@ async function connectFirebase() {
     const { getDatabase, ref, onValue } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js");
     const app = initializeApp(firebaseConfig);
     onValue(ref(getDatabase(app), trackerPath), (snapshot) => {
-      if (!snapshot.exists()) { setStatus("Waiting for GPS", "offline"); return; }
-      try { updateDashboard(snapshot.val()); } catch (error) { console.error(error); setStatus("Invalid GPS data", "offline"); }
+      if (!snapshot.exists()) { 
+        setStatus("Waiting for GPS", "offline"); 
+        return; 
+      }
+      try { 
+        updateDashboard(snapshot.val()); 
+      } catch (error) { 
+        console.error(error); 
+        setStatus("Invalid GPS data", "offline"); 
+      }
     }, () => setStatus("Firebase unavailable", "offline"));
+    
+    console.log("✅ Connected to Firebase. Listening for updates...");
   } catch (error) {
-    console.error(error);
+    console.error("❌ Firebase connection error:", error);
     setStatus("Firebase unavailable", "offline");
   }
 }
+
+// Start the app
 connectFirebase();
