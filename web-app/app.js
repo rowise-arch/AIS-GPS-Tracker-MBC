@@ -10,23 +10,30 @@ const firebaseConfig = {
 };
 
 const trackerPath = "trackers"; // Watch the entire trackers node
-const defaultCenter = [12.5742, 122.2709]; // Romblon, Philippines
+const defaultCenter = [12.4, 122.3]; // Center of Romblon
 const $ = (id) => document.getElementById(id);
 
 // Map setup
-const map = L.map("map", { zoomControl: false }).setView(defaultCenter, 10);
+const map = L.map("map", { 
+  zoomControl: false,
+  center: defaultCenter,
+  zoom: 10
+});
 L.control.zoom({ position: "bottomright" }).addTo(map);
+
+// Add OpenStreetMap tiles
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { 
   maxZoom: 19, 
-  attribution: "&copy; OpenStreetMap contributors" 
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
 }).addTo(map);
 
 // Store markers for each boat
 const markers = {};
 const boatData = {};
+let selectedBoat = null;
 let latestPosition = null;
 
-// Different colors for different boats
+// Boat colors
 const boatColors = {
   'boat-001': '#087d76',  // Teal
   'boat-002': '#e74c3c',  // Red
@@ -35,37 +42,21 @@ const boatColors = {
   'boat-005': '#9b59b6'   // Purple
 };
 
+// Boat names
+const boatNames = {
+  'boat-001': 'Boat 001',
+  'boat-002': 'Boat 002', 
+  'boat-003': 'Boat 003',
+  'boat-004': 'Boat 004',
+  'boat-005': 'Boat 005'
+};
+
 function getBoatColor(boatId) {
   return boatColors[boatId] || '#2ecc71';
 }
 
 function getBoatName(boatId) {
-  const names = {
-    'boat-001': 'Boat 001',
-    'boat-002': 'Boat 002', 
-    'boat-003': 'Boat 003',
-    'boat-004': 'Boat 004',
-    'boat-005': 'Boat 005'
-  };
-  return names[boatId] || boatId.toUpperCase();
-}
-
-function createBoatMarker(boatId, lat, lng) {
-  const color = getBoatColor(boatId);
-  const iconHtml = `
-    <div class="tracker-marker" style="background:${color};">
-      <span></span>
-    </div>
-  `;
-  
-  const icon = L.divIcon({
-    className: "",
-    html: iconHtml,
-    iconSize: [34, 34],
-    iconAnchor: [17, 33]
-  });
-  
-  return L.marker([lat, lng], { icon: icon });
+  return boatNames[boatId] || boatId.toUpperCase();
 }
 
 function setStatus(label, state) {
@@ -90,14 +81,65 @@ function signalBars(rssi) {
   document.querySelectorAll(".signal-bars i").forEach((bar, index) => bar.classList.toggle("active", index < count));
 }
 
-function updateBoatDashboard(boatId, data) {
+function createBoatMarker(boatId, lat, lng) {
+  const color = getBoatColor(boatId);
+  const name = getBoatName(boatId);
+  
+  // Create custom marker with boat color
+  const iconHtml = `
+    <div class="tracker-marker" style="background:${color};">
+      <span></span>
+    </div>
+  `;
+  
+  const icon = L.divIcon({
+    className: "",
+    html: iconHtml,
+    iconSize: [34, 34],
+    iconAnchor: [17, 33]
+  });
+  
+  const marker = L.marker([lat, lng], { icon: icon });
+  marker.bindTooltip(name, { 
+    direction: "top", 
+    offset: [0, -28],
+    permanent: false,
+    className: 'boat-tooltip'
+  });
+  
+  // Click on marker to select this boat
+  marker.on('click', function() {
+    selectBoat(boatId);
+  });
+  
+  return marker;
+}
+
+function selectBoat(boatId) {
+  selectedBoat = boatId;
+  const data = boatData[boatId];
+  if (data) {
+    updateDashboard(boatId, data);
+  }
+  
+  // Highlight selected marker
+  for (const [id, marker] of Object.entries(markers)) {
+    const color = getBoatColor(id);
+    const isSelected = id === boatId;
+    // You could add a highlight effect here
+  }
+}
+
+function updateDashboard(boatId, data) {
   const latitude = Number(data.latitude);
   const longitude = Number(data.longitude);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
   
   latestPosition = [latitude, longitude];
   
-  $("trackerName").textContent = data.name || getBoatName(boatId);
+  const name = getBoatName(boatId);
+  
+  $("trackerName").textContent = name;
   $("trackerId").textContent = boatId;
   $("latitude").textContent = `${latitude.toFixed(6)}°`;
   $("longitude").textContent = `${longitude.toFixed(6)}°`;
@@ -107,6 +149,19 @@ function updateBoatDashboard(boatId, data) {
   $("rssi").textContent = data.rssi != null ? `${data.rssi} dBm` : "-- dBm";
   signalBars(Number(data.rssi));
   setStatus("Live", "connected");
+  
+  // Update boat count
+  updateBoatList();
+}
+
+function updateBoatList() {
+  const boatIds = Object.keys(boatData);
+  const count = boatIds.length;
+  
+  // Update the subtitle with boat count
+  if (count > 1) {
+    $("trackerId").textContent = `${count} boats active`;
+  }
 }
 
 function updateAllBoats(snapshot) {
@@ -130,36 +185,39 @@ function updateAllBoats(snapshot) {
       
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
       
+      // Store data
+      boatData[boatId] = latest;
+      
       // Update or create marker
       if (markers[boatId]) {
         markers[boatId].setLatLng([lat, lng]);
       } else {
         const marker = createBoatMarker(boatId, lat, lng);
         marker.addTo(map);
-        marker.bindTooltip(getBoatName(boatId), { direction: "top", offset: [0, -28] });
         markers[boatId] = marker;
+        console.log(`✅ Added marker for ${getBoatName(boatId)}`);
       }
-      
-      // Store data
-      boatData[boatId] = latest;
     }
   }
   
-  // Update dashboard with first boat that has data
-  if (hasData) {
-    const firstBoat = Object.keys(data)[0];
-    if (data[firstBoat].latest) {
-      updateBoatDashboard(firstBoat, data[firstBoat].latest);
-    }
+  // If no boat is selected, select the first one
+  if (hasData && !selectedBoat) {
+    const firstBoat = Object.keys(boatData)[0];
+    selectBoat(firstBoat);
   }
   
-  // Update boat count in title
-  if (activeBoats > 1) {
-    $("trackerName").textContent = `${activeBoats} Boats Tracking`;
+  // Update status
+  if (activeBoats > 0) {
+    setStatus(`${activeBoats} boats live`, "connected");
+  }
+  
+  // Log active boats
+  if (activeBoats > 0) {
+    console.log(`📍 ${activeBoats} boats active: ${Object.keys(boatData).join(', ')}`);
   }
 }
 
-// Locate button
+// Locate button - zooms to selected boat
 $("locateButton").addEventListener("click", () => { 
   if (latestPosition) {
     map.flyTo(latestPosition, 15, { duration: 1.1 });
@@ -182,7 +240,10 @@ async function connectFirebase() {
     // Watch the entire trackers node
     onValue(ref(getDatabase(app), trackerPath), (snapshot) => {
       updateAllBoats(snapshot);
-    }, () => setStatus("Firebase unavailable", "offline"));
+    }, (error) => {
+      console.error("Firebase error:", error);
+      setStatus("Firebase unavailable", "offline");
+    });
     
     console.log("✅ Connected to Firebase. Listening for boats...");
   } catch (error) {
@@ -193,3 +254,7 @@ async function connectFirebase() {
 
 // Start the app
 connectFirebase();
+
+// Log startup
+console.log("🚤 AIS GPS Tracker - Multi-Boat Support");
+console.log("📍 Tracking boats in Romblon, Philippines");
