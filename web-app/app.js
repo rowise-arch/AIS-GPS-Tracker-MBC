@@ -9,11 +9,11 @@ const firebaseConfig = {
   appId: "1:4640602545:web:c52dac68e8ef8199df2590"
 };
 
-const trackerPath = "trackers/boat-001/latest";
+const trackerPath = "trackers"; // Watch the entire trackers node
 const defaultCenter = [12.5742, 122.2709]; // Romblon, Philippines
 const $ = (id) => document.getElementById(id);
 
-// Map setup - initial zoom level 10 to see all of Romblon
+// Map setup
 const map = L.map("map", { zoomControl: false }).setView(defaultCenter, 10);
 L.control.zoom({ position: "bottomright" }).addTo(map);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { 
@@ -21,15 +21,52 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   attribution: "&copy; OpenStreetMap contributors" 
 }).addTo(map);
 
-const markerIcon = L.divIcon({ 
-  className: "", 
-  html: document.querySelector("#markerTemplate").innerHTML, 
-  iconSize: [34, 34], 
-  iconAnchor: [17, 33] 
-});
+// Store markers for each boat
+const markers = {};
+const boatData = {};
+let latestPosition = null;
 
-let marker;
-let latestPosition;
+// Different colors for different boats
+const boatColors = {
+  'boat-001': '#087d76',  // Teal
+  'boat-002': '#e74c3c',  // Red
+  'boat-003': '#3498db',  // Blue
+  'boat-004': '#f39c12',  // Orange
+  'boat-005': '#9b59b6'   // Purple
+};
+
+function getBoatColor(boatId) {
+  return boatColors[boatId] || '#2ecc71';
+}
+
+function getBoatName(boatId) {
+  const names = {
+    'boat-001': 'Boat 001',
+    'boat-002': 'Boat 002', 
+    'boat-003': 'Boat 003',
+    'boat-004': 'Boat 004',
+    'boat-005': 'Boat 005'
+  };
+  return names[boatId] || boatId.toUpperCase();
+}
+
+function createBoatMarker(boatId, lat, lng) {
+  const color = getBoatColor(boatId);
+  const iconHtml = `
+    <div class="tracker-marker" style="background:${color};">
+      <span></span>
+    </div>
+  `;
+  
+  const icon = L.divIcon({
+    className: "",
+    html: iconHtml,
+    iconSize: [34, 34],
+    iconAnchor: [17, 33]
+  });
+  
+  return L.marker([lat, lng], { icon: icon });
+}
 
 function setStatus(label, state) {
   const element = $("connectionStatus");
@@ -53,13 +90,15 @@ function signalBars(rssi) {
   document.querySelectorAll(".signal-bars i").forEach((bar, index) => bar.classList.toggle("active", index < count));
 }
 
-function updateDashboard(data) {
+function updateBoatDashboard(boatId, data) {
   const latitude = Number(data.latitude);
   const longitude = Number(data.longitude);
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) throw new Error("Location needs numeric latitude and longitude.");
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+  
   latestPosition = [latitude, longitude];
-  $("trackerName").textContent = data.name || "Boat 001";
-  $("trackerId").textContent = data.deviceId || "boat-001";
+  
+  $("trackerName").textContent = data.name || getBoatName(boatId);
+  $("trackerId").textContent = boatId;
   $("latitude").textContent = `${latitude.toFixed(6)}°`;
   $("longitude").textContent = `${longitude.toFixed(6)}°`;
   $("lastUpdated").textContent = formatTimestamp(data.timestamp);
@@ -67,25 +106,62 @@ function updateDashboard(data) {
   $("battery").textContent = data.battery != null ? `${data.battery}%` : "--%";
   $("rssi").textContent = data.rssi != null ? `${data.rssi} dBm` : "-- dBm";
   signalBars(Number(data.rssi));
-  
-  // Update marker position WITHOUT auto-zoom
-  if (!marker) {
-    marker = L.marker(latestPosition, { icon: markerIcon }).addTo(map);
-  } else {
-    marker.setLatLng(latestPosition);
-  }
-  marker.bindTooltip(data.name || "Boat 001", { direction: "top", offset: [0, -28] });
-  
-  // REMOVED: map.flyTo(latestPosition, Math.max(map.getZoom(), 15), { duration: 1.1 });
-  // The map stays at whatever zoom level the user set
-  
   setStatus("Live", "connected");
 }
 
-// Locate button - zooms to tracker when clicked
+function updateAllBoats(snapshot) {
+  const data = snapshot.val();
+  if (!data) {
+    setStatus("Waiting for GPS", "offline");
+    return;
+  }
+  
+  let hasData = false;
+  let activeBoats = 0;
+  
+  // Iterate through all boats
+  for (const [boatId, boatInfo] of Object.entries(data)) {
+    if (boatInfo.latest) {
+      hasData = true;
+      activeBoats++;
+      const latest = boatInfo.latest;
+      const lat = Number(latest.latitude);
+      const lng = Number(latest.longitude);
+      
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      
+      // Update or create marker
+      if (markers[boatId]) {
+        markers[boatId].setLatLng([lat, lng]);
+      } else {
+        const marker = createBoatMarker(boatId, lat, lng);
+        marker.addTo(map);
+        marker.bindTooltip(getBoatName(boatId), { direction: "top", offset: [0, -28] });
+        markers[boatId] = marker;
+      }
+      
+      // Store data
+      boatData[boatId] = latest;
+    }
+  }
+  
+  // Update dashboard with first boat that has data
+  if (hasData) {
+    const firstBoat = Object.keys(data)[0];
+    if (data[firstBoat].latest) {
+      updateBoatDashboard(firstBoat, data[firstBoat].latest);
+    }
+  }
+  
+  // Update boat count in title
+  if (activeBoats > 1) {
+    $("trackerName").textContent = `${activeBoats} Boats Tracking`;
+  }
+}
+
+// Locate button
 $("locateButton").addEventListener("click", () => { 
   if (latestPosition) {
-    // Zoom to level 15 when button is clicked
     map.flyTo(latestPosition, 15, { duration: 1.1 });
   } 
 });
@@ -102,20 +178,13 @@ async function connectFirebase() {
     const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
     const { getDatabase, ref, onValue } = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js");
     const app = initializeApp(firebaseConfig);
+    
+    // Watch the entire trackers node
     onValue(ref(getDatabase(app), trackerPath), (snapshot) => {
-      if (!snapshot.exists()) { 
-        setStatus("Waiting for GPS", "offline"); 
-        return; 
-      }
-      try { 
-        updateDashboard(snapshot.val()); 
-      } catch (error) { 
-        console.error(error); 
-        setStatus("Invalid GPS data", "offline"); 
-      }
+      updateAllBoats(snapshot);
     }, () => setStatus("Firebase unavailable", "offline"));
     
-    console.log("✅ Connected to Firebase. Listening for updates...");
+    console.log("✅ Connected to Firebase. Listening for boats...");
   } catch (error) {
     console.error("❌ Firebase connection error:", error);
     setStatus("Firebase unavailable", "offline");

@@ -6,12 +6,15 @@ import sys
 import os
 import serial.tools.list_ports
 
-# Firebase URL
-FIREBASE_URL = "https://ais-gps-tracker-default-rtdb.firebaseio.com/trackers/boat-001/latest.json"
+# Firebase base URL
+FIREBASE_BASE_URL = "https://ais-gps-tracker-default-rtdb.firebaseio.com/trackers"
 
 # Serial port - CHANGE THIS TO YOUR ARDUINO PORT
-# Find your port by checking Device Manager or Arduino IDE
-PORT = "COM7"  # Change this! Common: COM3, COM4, COM5
+PORT = "COM7"  # Change this if needed
+
+# Store boat data for summary
+boats = {}
+packet_count = 0
 
 def list_available_ports():
     """List all available serial ports"""
@@ -21,11 +24,27 @@ def list_available_ports():
         print(f"   {port.device} - {port.description}")
     print()
 
-def send_to_firebase(name, lat, lng, rssi, battery):
-    """Send GPS data to Firebase"""
+def get_boat_name(boat_id):
+    """Get display name for a boat"""
+    boat_names = {
+        "boat-001": "Boat 001",
+        "boat-002": "Boat 002",
+        "boat-003": "Boat 003",
+        "boat-004": "Boat 004",
+        "boat-005": "Boat 005",
+        # Add more boats here as needed
+    }
+    return boat_names.get(boat_id, boat_id.upper())
+
+def send_to_firebase(boat_id, name, lat, lng, rssi, battery):
+    """Send GPS data to Firebase for a specific boat"""
+    
+    # Build the Firebase URL for this boat
+    firebase_url = f"{FIREBASE_BASE_URL}/{boat_id}/latest.json"
+    
     data = {
         "name": name,
-        "deviceId": "boat-001",
+        "deviceId": boat_id,
         "latitude": lat,
         "longitude": lng,
         "accuracy": 5,
@@ -35,57 +54,45 @@ def send_to_firebase(name, lat, lng, rssi, battery):
     }
     
     try:
-        response = requests.put(FIREBASE_URL, json=data, timeout=5)
+        response = requests.put(firebase_url, json=data, timeout=5)
         if response.status_code == 200:
-            print("   ✅ Firebase updated!")
+            print(f"   ✅ Firebase updated for {boat_id}!")
             return True
         else:
-            print(f"   ❌ Firebase error: {response.status_code}")
+            print(f"   ❌ Firebase error for {boat_id}: {response.status_code}")
             return False
-    except requests.exceptions.Timeout:
-        print("   ⏰ Timeout - check internet connection")
-        return False
-    except requests.exceptions.ConnectionError:
-        print("   🔌 Cannot connect to Firebase - check internet")
-        return False
     except Exception as e:
         print(f"   ❌ Error: {e}")
         return False
 
 def main():
+    global packet_count
+    
     print("╔═══════════════════════════════════════════════════════╗")
-    print("║     LoRa to Firebase Bridge - Python Version         ║")
-    print("║     AIS GPS Tracker                                  ║")
+    print("║     LoRa to Firebase Bridge - AIS GPS Tracker        ║")
+    print("║     Multi-Boat Support - Romblon, Philippines        ║")
     print("╚═══════════════════════════════════════════════════════╝")
     print()
     
     # List available ports
     list_available_ports()
     
-    # Check if port exists
-    if not os.path.exists(PORT) and not PORT.startswith('COM'):
-        print(f"⚠️ Port {PORT} not found!")
-        print("   Please change the PORT variable to your Arduino port")
-        print("   Common ports: COM3, COM4, COM5, /dev/ttyUSB0")
-        print()
-        print("   To find your port:")
-        print("   1. Open Arduino IDE")
-        print("   2. Go to Tools → Port")
-        print("   3. See which COM port is selected")
-        return
+    print(f"🔌 Attempting to connect to: {PORT}")
+    print()
     
     try:
         # Open serial port
-        print(f"🔌 Connecting to {PORT} at 9600 baud...")
         ser = serial.Serial(PORT, 9600, timeout=1)
-        time.sleep(2)  # Wait for Arduino to reset
+        time.sleep(2)
         print("✅ Serial port opened successfully!")
-        print("📡 Listening for LoRa data...")
+        print("📡 Listening for LoRa data from multiple boats...")
         print("   Press Ctrl+C to exit")
         print()
         print("=" * 60)
+        print()
         
-        packet_count = 0
+        firebase_success = 0
+        firebase_fail = 0
         
         while True:
             if ser.in_waiting > 0:
@@ -99,13 +106,14 @@ def main():
                         
                         try:
                             if len(parts) >= 4:
-                                name = parts[0].strip()
+                                # Parse: boat-xxx,lat,lng,battery,RSSI:value
+                                boat_id = parts[0].strip()
                                 lat = float(parts[1].strip())
                                 lng = float(parts[2].strip())
                                 battery = int(parts[3].strip())
                                 
                                 # Check for RSSI
-                                rssi = -78  # Default
+                                rssi = -78
                                 if len(parts) >= 5:
                                     if "RSSI:" in parts[4]:
                                         rssi = int(parts[4].split(":")[1].strip())
@@ -116,42 +124,62 @@ def main():
                                             pass
                                 
                                 packet_count += 1
+                                
+                                # Store boat data
+                                boats[boat_id] = {
+                                    'lat': lat,
+                                    'lng': lng,
+                                    'battery': battery,
+                                    'rssi': rssi
+                                }
+                                
+                                # Get boat name
+                                name = get_boat_name(boat_id)
+                                
+                                # Display packet info
                                 print(f"📦 Packet #{packet_count}")
-                                print(f"   Name: {name}")
+                                print(f"   Boat: {name} ({boat_id})")
                                 print(f"   Location: {lat:.6f}, {lng:.6f}")
                                 print(f"   Battery: {battery}%")
                                 print(f"   RSSI: {rssi} dBm")
                                 
                                 # Send to Firebase
-                                send_to_firebase(name, lat, lng, rssi, battery)
+                                if send_to_firebase(boat_id, name, lat, lng, rssi, battery):
+                                    firebase_success += 1
+                                else:
+                                    firebase_fail += 1
+                                
+                                # Show active boats summary every 10 packets
+                                if packet_count % 10 == 0:
+                                    print()
+                                    print(f"📊 Active Boats ({len(boats)}):")
+                                    for bid in boats.keys():
+                                        print(f"   • {get_boat_name(bid)} ({bid})")
+                                    print()
+                                
                                 print("-" * 60)
+                                print()
                             else:
                                 print(f"⚠️ Invalid format: {data_line}")
-                                print(f"   Expected: name,lat,lng,battery")
-                                print(f"   Received: {len(parts)} parts")
+                                print()
                         except ValueError as e:
                             print(f"⚠️ Parse error: {e}")
                             print(f"   Data: {data_line}")
+                            print()
                     else:
-                        # Print other serial output for debugging
+                        # Print other serial output
                         if line and not line.startswith("LoRa"):
                             print(f"📝 {line}")
             
-            time.sleep(0.05)  # Small delay to prevent CPU overload
+            time.sleep(0.05)
             
     except serial.SerialException as e:
         print(f"❌ Serial error: {e}")
         print()
         print("   Make sure:")
         print("   1. Arduino is connected via USB")
-        print("   2. No other program (like Arduino IDE) is using the port")
+        print("   2. No other program is using the port")
         print("   3. The port name is correct")
-        print()
-        print("   To find your port:")
-        print("   1. Open Arduino IDE")
-        print("   2. Go to Tools → Port")
-        print("   3. See which COM port is selected")
-        print("   4. Update PORT = 'COMx' in the script")
     except KeyboardInterrupt:
         print("\n🛑 Shutting down...")
     except Exception as e:
@@ -161,6 +189,16 @@ def main():
             ser.close()
             print("✅ Serial port closed")
         print("✅ Bridge stopped")
+        print()
+        print(f"📊 Final Statistics:")
+        print(f"   Total packets: {packet_count}")
+        print(f"   Firebase success: {firebase_success}")
+        print(f"   Firebase failed: {firebase_fail}")
+        print(f"   Active boats: {len(boats)}")
+        if boats:
+            print("   Boats tracked:")
+            for bid in boats.keys():
+                print(f"      - {get_boat_name(bid)} ({bid})")
 
 if __name__ == "__main__":
     main()
