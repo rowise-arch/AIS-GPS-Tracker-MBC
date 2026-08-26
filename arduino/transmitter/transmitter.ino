@@ -1,48 +1,35 @@
 #include <SPI.h>
 #include <LoRa.h>
+#include <TinyGPS++.h>
+#include <SoftwareSerial.h>
 
 // LoRa pins for Arduino Uno
 #define SS_PIN 10
 #define RST_PIN 9
 #define DIO0_PIN 2
 
+// GPS pins
+#define GPS_RX_PIN 4  // GPS TX → Arduino RX (pin 4)
+#define GPS_TX_PIN 3  // GPS RX → Arduino TX (pin 3)
+
 // ===== BOAT CONFIGURATION - Change this for each boat =====
 const String BOAT_ID = "boat-001";      // ← Change for each boat
 const String BOAT_NAME = "Boat 001";    // ← Change for each boat
 // ==========================================================
 
-// Romblon waypoints (simulated boat route)
-struct Waypoint {
-  float lat;
-  float lng;
-  const char* name;
-};
+// Create GPS and SoftwareSerial objects
+TinyGPSPlus gps;
+SoftwareSerial gpsSerial(GPS_RX_PIN, GPS_TX_PIN);
 
-// Define waypoints around Romblon
-Waypoint waypoints[] = {
-  {12.5742, 122.2709, "Romblon Town"},
-  {12.5800, 122.2750, "North Romblon"},
-  {12.5900, 122.2850, "Cresta de Gallo"},
-  {12.5500, 122.2500, "Carabao Island"},
-  {12.5200, 122.2400, "Logbon Island"},
-  {12.5000, 122.2300, "Alad Island"},
-  {12.4800, 122.2200, "Sibuyan Sea"},
-  {12.4400, 122.1800, "Near Odiongan"},
-  {12.4019, 122.0333, "Odiongan"},
-  {12.4000, 122.0000, "Tablas Island"},
-  {12.3444, 121.9778, "San Jose"},
-  {12.3500, 122.7000, "Sibuyan Island"},
-  {12.3667, 122.6833, "Cajidiocan"},
-  {12.4833, 122.5167, "Magdiwang"}
-};
-
-int waypointCount = sizeof(waypoints) / sizeof(waypoints[0]);
-int currentWaypoint = 0;
-float currentLat = waypoints[0].lat;
-float currentLng = waypoints[0].lng;
-float step = 0;
+// Variables
 int battery = 86;
 int packetCount = 0;
+unsigned long lastSendTime = 0;
+const unsigned long sendInterval = 5000; // Send every 5 seconds
+
+// For GPS status tracking
+bool gpsFixed = false;
+unsigned long lastGpsUpdate = 0;
 
 void setup() {
   Serial.begin(9600);
@@ -52,6 +39,11 @@ void setup() {
   Serial.println("LoRa Transmitter - " + BOAT_NAME);
   Serial.println("=================================");
   Serial.println();
+  
+  // Initialize GPS
+  Serial.print("Initializing GPS... ");
+  gpsSerial.begin(9600);
+  Serial.println("OK");
   
   // Initialize LoRa (915MHz for Philippines)
   Serial.print("Initializing LoRa... ");
@@ -78,66 +70,153 @@ void setup() {
   Serial.println("  Coding Rate: 4/5");
   Serial.println();
   Serial.println("📍 Boat ID: " + BOAT_ID);
-  Serial.println("📍 Starting at: " + String(waypoints[0].name));
-  Serial.println("   Lat: " + String(currentLat, 6) + ", Lng: " + String(currentLng, 6));
   Serial.println();
-  Serial.println("📡 Sending packets every 2 seconds...");
+  Serial.println("📡 Waiting for GPS fix...");
+  Serial.println("   (This may take 1-3 minutes on first startup)");
+  Serial.println();
+  Serial.println("📡 Sending packets every 5 seconds...");
   Serial.println("=================================");
   Serial.println();
 }
 
 void loop() {
-  // Move along route
-  step += 0.03;
-  
-  if (step >= 1.0) {
-    step = 0;
-    currentWaypoint = (currentWaypoint + 1) % waypointCount;
-    currentLat = waypoints[currentWaypoint].lat;
-    currentLng = waypoints[currentWaypoint].lng;
+  // Read GPS data
+  while (gpsSerial.available() > 0) {
+    char c = gpsSerial.read();
+    gps.encode(c);
     
-    Serial.println("⛵ Reached: " + String(waypoints[currentWaypoint].name));
-    Serial.println("   Lat: " + String(currentLat, 6) + ", Lng: " + String(currentLng, 6));
-  } else {
-    int nextWaypoint = (currentWaypoint + 1) % waypointCount;
-    float startLat = waypoints[currentWaypoint].lat;
-    float startLng = waypoints[currentWaypoint].lng;
-    float endLat = waypoints[nextWaypoint].lat;
-    float endLng = waypoints[nextWaypoint].lng;
-    
-    float t = step * step * (3 - 2 * step);
-    currentLat = startLat + (endLat - startLat) * t;
-    currentLng = startLng + (endLng - startLng) * t;
+    // Update GPS status
+    if (gps.location.isValid()) {
+      gpsFixed = true;
+      lastGpsUpdate = millis();
+    }
   }
   
-  // Simulate battery (85-100%)
-  battery = 85 + random(0, 15);
+  // Check if GPS has lost fix (no data for 10 seconds)
+  if (gpsFixed && millis() - lastGpsUpdate > 10000) {
+    gpsFixed = false;
+    Serial.println("⚠️ GPS signal lost!");
+  }
   
-  // Simulate RSSI (-90 to -60 dBm)
-  int rssi = -90 + random(0, 30);
+  // Send data at interval
+  if (millis() - lastSendTime >= sendInterval) {
+    lastSendTime = millis();
+    sendData();
+  }
+  
+  delay(100);
+}
+
+void sendData() {
+  // Get battery reading (replace with actual analog reading)
+  battery = readBattery();
+  
+  // Get RSSI from LoRa (will be updated when packet is sent)
+  int loraRssi = LoRa.packetRssi();
   
   packetCount++;
   
-  // Format: BOAT_ID,latitude,longitude,battery,RSSI:value
-  String data = BOAT_ID + ",";
-  data += String(currentLat, 6) + ",";
-  data += String(currentLng, 6) + ",";
-  data += String(battery) + ",RSSI:";
-  data += String(rssi);
+  // Format data
+  String data = "";
+  
+  if (gps.location.isValid()) {
+    // GPS has valid data
+    double lat = gps.location.lat();
+    double lng = gps.location.lng();
+    float speed = gps.speed.kmph(); // Speed in km/h
+    float altitude = gps.altitude.meters();
+    int satellites = gps.satellites.value();
+    
+    // Format: BOAT_ID,latitude,longitude,speed,altitude,satellites,battery,RSSI:value
+    data = BOAT_ID + ",";
+    data += String(lat, 6) + ",";
+    data += String(lng, 6) + ",";
+    data += String(speed, 1) + ",";        // Speed in km/h
+    data += String(altitude, 1) + ",";     // Altitude in meters
+    data += String(satellites) + ",";      // Number of satellites
+    data += String(battery) + ",RSSI:";
+    data += String(loraRssi);
+    
+    // Print to serial with GPS info
+    Serial.print("📡 #");
+    Serial.print(packetCount);
+    Serial.print(": ");
+    Serial.print(data);
+    Serial.print(" | GPS: ");
+    Serial.print(lat, 6);
+    Serial.print(", ");
+    Serial.print(lng, 6);
+    Serial.print(" | Speed: ");
+    Serial.print(speed, 1);
+    Serial.print(" km/h | Sats: ");
+    Serial.println(satellites);
+    
+  } else {
+    // No GPS fix - send last known or default location
+    data = BOAT_ID + ",";
+    data += "0.000000,0.000000,0.0,0.0,0,";  // No GPS data
+    data += String(battery) + ",RSSI:";
+    data += String(loraRssi);
+    
+    Serial.print("📡 #");
+    Serial.print(packetCount);
+    Serial.print(": ");
+    Serial.print(data);
+    Serial.println(" | ❌ NO GPS FIX");
+    
+    // Print GPS status for debugging
+    printGpsStatus();
+  }
   
   // Send via LoRa
   LoRa.beginPacket();
   LoRa.print(data);
   int result = LoRa.endPacket();
   
-  if (result == 1) {
-    Serial.print("📡 #");
-    Serial.print(packetCount);
-    Serial.print(": ");
-    Serial.println(data);
-  } else {
-    Serial.println("❌ Send failed!");
+  if (result != 1) {
+    Serial.println("❌ LoRa send failed!");
+  }
+}
+
+int readBattery() {
+  // Read battery voltage from pin A2 (with voltage divider)
+  // Replace with your actual battery reading circuit
+  int sensorValue = analogRead(A2);
+  
+  // Convert to voltage (assuming 5V reference and voltage divider)
+  // Example: 10k + 10k divider gives 2x multiplication
+  float voltage = (sensorValue / 1023.0) * 5.0 * 2.0;
+  
+  // Convert to percentage (assuming 3.0V = 0%, 4.2V = 100%)
+  int percentage = map(voltage * 100, 300, 420, 0, 100);
+  percentage = constrain(percentage, 0, 100);
+  
+  return percentage;
+}
+
+void printGpsStatus() {
+  Serial.print("   GPS Status - ");
+  if (gps.charsProcessed() < 10) {
+    Serial.println("No GPS data received yet");
+    Serial.println("   Check GPS wiring (VCC, GND, TX→RX)");
+    return;
   }
   
-  delay(2000);
+  Serial.print("Satellites: ");
+  Serial.print(gps.satellites.value());
+  Serial.print(" | HDOP: ");
+  Serial.print(gps.hdop.value());
+  Serial.print(" | Age: ");
+  Serial.print(gps.location.age());
+  Serial.println("ms");
+}
+
+// Function to force GPS update if needed
+void forceGpsUpdate() {
+  // If no GPS data for 30 seconds, restart GPS communication
+  if (millis() - lastGpsUpdate > 30000 && !gps.location.isValid()) {
+    Serial.println("🔄 Restarting GPS...");
+    gpsSerial.begin(9600);
+    lastGpsUpdate = millis();
+  }
 }
